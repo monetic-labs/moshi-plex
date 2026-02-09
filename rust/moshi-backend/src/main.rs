@@ -6,11 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::str::FromStr;
 
-mod audio;
-mod benchmark;
-mod standalone;
-mod stream_both;
-mod utils;
+use moshi_backend::{standalone, stream_both, utils, benchmark};
 
 #[derive(Parser, Debug)]
 #[clap(name = "server", about = "moshi web server")]
@@ -29,13 +25,13 @@ struct Args {
 }
 
 #[derive(Parser, Debug)]
-struct StandaloneArgs {
+struct CliStandaloneArgs {
     #[clap(long)]
     cpu: bool,
 }
 
 #[derive(Clone, Parser, Debug)]
-pub struct BenchmarkArgs {
+struct CliBenchmarkArgs {
     #[clap(long)]
     cpu: bool,
 
@@ -60,8 +56,8 @@ pub struct BenchmarkArgs {
 
 #[derive(Debug, clap::Subcommand)]
 enum Command {
-    Standalone(StandaloneArgs),
-    Benchmark(BenchmarkArgs),
+    Standalone(CliStandaloneArgs),
+    Benchmark(CliBenchmarkArgs),
 }
 
 /// A TLS acceptor that sets `TCP_NODELAY` on accepted streams.
@@ -113,7 +109,8 @@ fn tracing_init(
 async fn main() -> Result<()> {
     let args = Args::parse();
     match args.command {
-        Command::Standalone(standalone_args) => {
+        Command::Standalone(cli_args) => {
+            let standalone_args = moshi_backend::StandaloneArgs { cpu: cli_args.cpu };
             let mut config = standalone::Config::load(&args.config)?;
             let _guard = tracing_init(
                 &config.stream.log_dir,
@@ -151,9 +148,18 @@ async fn main() -> Result<()> {
             }
             standalone::run(&standalone_args, &config).await?;
         }
-        Command::Benchmark(standalone_args) => {
+        Command::Benchmark(cli_args) => {
+            let benchmark_args = moshi_backend::BenchmarkArgs {
+                cpu: cli_args.cpu,
+                steps: cli_args.steps,
+                reps: cli_args.reps,
+                stat_file: cli_args.stat_file,
+                chrome_tracing: cli_args.chrome_tracing,
+                asr: cli_args.asr,
+                mimi_only: cli_args.mimi_only,
+            };
             let config = stream_both::Config::load(&args.config)?;
-            let _guard = if standalone_args.chrome_tracing {
+            let _guard = if benchmark_args.chrome_tracing {
                 use tracing_chrome::ChromeLayerBuilder;
                 use tracing_subscriber::prelude::*;
                 let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
@@ -170,7 +176,7 @@ async fn main() -> Result<()> {
                 let b: Box<dyn std::any::Any> = Box::new(guard);
                 b
             };
-            benchmark::run(&standalone_args, &config).await?;
+            benchmark::run(&benchmark_args, &config).await?;
         }
     }
     Ok(())

@@ -8,6 +8,14 @@ keywords.workspace = true
 categories.workspace = true
 license.workspace = true
 
+[lib]
+name = "moshi_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "moshi-backend"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }

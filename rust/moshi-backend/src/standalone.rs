@@ -44,7 +44,7 @@ impl Config {
     }
 }
 
-pub(crate) fn device(cpu: bool) -> Result<candle::Device> {
+pub fn device(cpu: bool) -> Result<candle::Device> {
     use candle::Device;
     if cpu {
         Ok(Device::Cpu)

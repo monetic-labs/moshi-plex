@@ -70,7 +70,7 @@ where
     samples.extend(data.chan(0).iter().map(|v| f32::from_sample(*v)))
 }
 
-pub(crate) fn pcm_decode<P: AsRef<std::path::Path>>(path: P) -> anyhow::Result<(Vec<f32>, u32)> {
+pub fn pcm_decode<P: AsRef<std::path::Path>>(path: P) -> anyhow::Result<(Vec<f32>, u32)> {
     use symphonia::core::audio::{AudioBufferRef, Signal};
 
     let src = std::fs::File::open(path)?;
@@ -114,7 +114,7 @@ pub(crate) fn pcm_decode<P: AsRef<std::path::Path>>(path: P) -> anyhow::Result<(
     Ok((pcm_data, sample_rate))
 }
 
-pub(crate) fn resample(pcm_in: &[f32], sr_in: usize, sr_out: usize) -> anyhow::Result<Vec<f32>> {
+pub fn resample(pcm_in: &[f32], sr_in: usize, sr_out: usize) -> anyhow::Result<Vec<f32>> {
     use rubato::Resampler;
 
     let mut pcm_out =
@@ -142,7 +142,7 @@ pub(crate) fn resample(pcm_in: &[f32], sr_in: usize, sr_out: usize) -> anyhow::R
     Ok(pcm_out)
 }
 
-pub(crate) fn write_opus_header<W: std::io::Write>(w: &mut W) -> std::io::Result<()> {
+pub fn write_opus_header<W: std::io::Write>(w: &mut W) -> std::io::Result<()> {
     use byteorder::WriteBytesExt;
 
     // https://wiki.xiph.org/OggOpus#ID_Header
@@ -156,7 +156,7 @@ pub(crate) fn write_opus_header<W: std::io::Write>(w: &mut W) -> std::io::Result
     Ok(())
 }
 
-pub(crate) fn write_opus_tags<W: std::io::Write>(w: &mut W) -> std::io::Result<()> {
+pub fn write_opus_tags<W: std::io::Write>(w: &mut W) -> std::io::Result<()> {
     use byteorder::WriteBytesExt;
 
     // https://wiki.xiph.org/OggOpus#Comment_Header
