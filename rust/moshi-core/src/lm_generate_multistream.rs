@@ -331,7 +331,7 @@ impl State {
         if self.step_idx <= self.config.acoustic_delay {
             None
         } else {
-            // step_idx is in advance by 1 + there is a 2 token delay on audio tokens.
+            // step_idx is in advance by 1 + there is acoustic_delay token delay on audio tokens.
             let audio_tokens = &self.audio_tokens[self.step_idx - self.config.acoustic_delay - 1];
             if audio_tokens.iter().any(|v| *v as usize >= self.config.audio_vocab_size - 1) {
                 None

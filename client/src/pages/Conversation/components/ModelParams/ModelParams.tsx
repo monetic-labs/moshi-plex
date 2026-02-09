@@ -16,6 +16,8 @@ export const ModelParams: FC<ModelParamsProps> = ({
   repetitionPenalty,
   repetitionPenaltyContext,
   imageResolution,
+  voicePrompt,
+  textPrompt,
   setTextTemperature,
   setTextTopk,
   setAudioTemperature,
@@ -24,6 +26,8 @@ export const ModelParams: FC<ModelParamsProps> = ({
   setRepetitionPenalty,
   setRepetitionPenaltyContext,
   setImageResolution,
+  setVoicePrompt,
+  setTextPrompt,
   resetParams,
   isConnected,
   isImageMode,
@@ -67,6 +71,50 @@ export const ModelParams: FC<ModelParamsProps> = ({
             <td>Repeat penalty last N:</td>
             <td className="w-12 text-center">{repetitionPenaltyContext}</td>
             <td className="p-2"><input className="range align-middle" disabled={isConnected} type="range" id="repetition-penalty-context" name="repetition-penalty-context" step="1" min="0" max="200" value={repetitionPenaltyContext} onChange={e => setRepetitionPenaltyContext(parseFloat(e.target.value))} /></td>
+          </tr>
+          <tr>
+            <td>Voice:</td>
+            <td className="w-12 text-center text-xs">{voicePrompt || "default"}</td>
+            <td className="p-2">
+              <select className="bg-gray-800 text-white rounded p-1 text-sm" disabled={isConnected}
+                value={voicePrompt} onChange={e => setVoicePrompt(e.target.value)}>
+                <option value="">Default</option>
+                <optgroup label="Natural Female">
+                  <option value="NATF0.safetensors">NATF0</option>
+                  <option value="NATF1.pt">NATF1</option>
+                  <option value="NATF2.pt">NATF2</option>
+                  <option value="NATF3.pt">NATF3</option>
+                </optgroup>
+                <optgroup label="Natural Male">
+                  <option value="NATM0.pt">NATM0</option>
+                  <option value="NATM1.pt">NATM1</option>
+                  <option value="NATM2.pt">NATM2</option>
+                  <option value="NATM3.pt">NATM3</option>
+                </optgroup>
+                <optgroup label="Varied Female">
+                  <option value="VARF0.pt">VARF0</option>
+                  <option value="VARF1.pt">VARF1</option>
+                  <option value="VARF2.pt">VARF2</option>
+                  <option value="VARF3.pt">VARF3</option>
+                  <option value="VARF4.pt">VARF4</option>
+                </optgroup>
+                <optgroup label="Varied Male">
+                  <option value="VARM0.pt">VARM0</option>
+                  <option value="VARM1.pt">VARM1</option>
+                  <option value="VARM2.pt">VARM2</option>
+                  <option value="VARM3.pt">VARM3</option>
+                  <option value="VARM4.pt">VARM4</option>
+                </optgroup>
+              </select>
+            </td>
+          </tr>
+          <tr>
+            <td>System prompt:</td>
+            <td colSpan={2} className="p-2">
+              <input className="bg-gray-800 text-white rounded p-1 text-sm w-full" disabled={isConnected}
+                type="text" placeholder="e.g. You are a helpful assistant named Jane."
+                value={textPrompt} onChange={e => setTextPrompt(e.target.value)} />
+            </td>
           </tr>
           {isImageMode &&
             <tr>

@@ -64,6 +64,13 @@ const buildURL = ({
   url.searchParams.append("audio_seed", audioSeed.toString());
   url.searchParams.append("repetition_penalty_context", params.repetitionPenaltyContext.toString());
   url.searchParams.append("repetition_penalty", params.repetitionPenalty.toString());
+  // Add PersonaPlex voice and text prompts
+  if (params.voicePrompt && params.voicePrompt.length > 0) {
+    url.searchParams.append("voice_prompt", params.voicePrompt);
+  }
+  if (params.textPrompt && params.textPrompt.length > 0) {
+    url.searchParams.append("text_prompt", params.textPrompt);
+  }
   // Add image params if given
   if (params.imageUrl != undefined) {
     url.searchParams.append("image_url", params.imageUrl.toString());

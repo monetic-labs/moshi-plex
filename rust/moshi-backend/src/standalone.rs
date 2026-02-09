@@ -32,6 +32,9 @@ impl Config {
         config.stream.mimi_model_file =
             crate::utils::replace_env_vars(&config.stream.mimi_model_file);
         config.stream.lm_model_file = crate::utils::replace_env_vars(&config.stream.lm_model_file);
+        if let Some(ref dir) = config.stream.voice_prompt_dir {
+            config.stream.voice_prompt_dir = Some(crate::utils::replace_env_vars(dir));
+        }
         Ok(config)
     }
 
@@ -57,8 +60,25 @@ pub(crate) fn device(cpu: bool) -> Result<candle::Device> {
 impl stream_both::AppStateInner {
     pub fn new(args: &StandaloneArgs, config: &stream_both::Config) -> Result<Self> {
         let device = device(args.cpu)?;
-        let dtype = if device.is_cuda() { candle::DType::BF16 } else { candle::DType::F32 };
-        let lm_model = moshi::lm::load_streaming(&config.lm_model_file, dtype, &device)?;
+        let is_personaplex = config.model_type.as_deref().map_or(false, |t| t.starts_with("personaplex"));
+        let is_personaplex_16 = config.model_type.as_deref() == Some("personaplex-16");
+        // PersonaPlex weights are BF16 natively; Metal supports BF16 on Apple Silicon.
+        // Using BF16 halves memory bandwidth and speeds up inference significantly.
+        // Standard moshi uses F32 on Metal for compatibility, but q8 GGUF handles its own quantization.
+        let dtype = if device.is_cuda() || is_personaplex {
+            candle::DType::BF16
+        } else {
+            candle::DType::F32
+        };
+        let lm_model = if is_personaplex_16 {
+            tracing::info!("loading PersonaPlex model (16 slices)");
+            moshi::lm::load_personaplex_16(&config.lm_model_file, dtype, &device)?
+        } else if is_personaplex {
+            tracing::info!("loading PersonaPlex model (8 slices)");
+            moshi::lm::load_personaplex(&config.lm_model_file, dtype, &device)?
+        } else {
+            moshi::lm::load_streaming(&config.lm_model_file, dtype, &device)?
+        };
         let mimi_device = if config.use_cpu_for_mimi { &candle::Device::Cpu } else { &device };
         let mimi_model = moshi::mimi::load(
             &config.mimi_model_file,
@@ -71,8 +91,10 @@ impl stream_both::AppStateInner {
         {
             tracing::info!(?dtype, ?device, "warming up the model");
             let mut lm_model = lm_model.clone();
+            // PersonaPlex has 16 audio codebooks (8 model + 8 user) in the main transformer
+            let num_audio_codebooks = lm_model.in_audio_codebooks();
             let (_v, ys) =
-                lm_model.forward(None, vec![None; config.mimi_num_codebooks], &().into())?;
+                lm_model.forward(None, vec![None; num_audio_codebooks], &().into())?;
             let mut lp = candle_transformers::generation::LogitsProcessor::new(123, None, None);
             let _ = lm_model.depformer_sample(&ys, None, &[], &mut lp)?;
             let mut mimi_model = mimi_model.clone();

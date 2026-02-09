@@ -1,0 +1,24 @@
+{
+  "instance_name": "personaplex-16",
+  "model_type": "personaplex-16",
+  "lm_model_file": "$HOME/.cache/huggingface/personaplex-7b-v1/model.q8.16slices.gguf",
+  "text_tokenizer_file": "$HOME/.cache/huggingface/personaplex-7b-v1/tokenizer_spm_32k_3.model",
+  "log_dir": "$HOME/tmp/moshi-logs",
+  "mimi_model_file": "$HOME/.cache/huggingface/personaplex-7b-v1/tokenizer-e351c8d8-checkpoint125.safetensors",
+  "mimi_num_codebooks": 8,
+  "use_cpu_for_mimi": true,
+  "voice_prompt_dir": "$HOME/.cache/huggingface/personaplex-7b-v1/voices",
+  "lm_config": {
+    "generated_audio_codebooks": 8,
+    "input_audio_codebooks": 8,
+    "audio_vocab_size": 2049,
+    "acoustic_delay": 1,
+    "text_eop_token": 0,
+    "text_pad_token": 3,
+    "text_start_token": 32000
+  },
+  "static_dir": "$HOME/_armory/an-world/core/moshi-upstream/client/dist",
+  "addr": "0.0.0.0",
+  "port": 8998,
+  "cert_dir": "."
+}

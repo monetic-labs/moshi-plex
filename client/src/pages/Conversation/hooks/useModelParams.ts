@@ -11,6 +11,8 @@ export const DEFAULT_IMAGE_RESOLUTION = 224;
 export const DEFAULT_IMAGE_URL = undefined;
 export const DEFAULT_IMAGE_MULT = 1.0;
 export const DEFAULT_DISPLAY_COLOR = false;
+export const DEFAULT_VOICE_PROMPT = "";
+export const DEFAULT_TEXT_PROMPT = "";
 
 export type ModelParamsValues = {
   textTemperature: number;
@@ -23,6 +25,8 @@ export type ModelParamsValues = {
   imageResolution: number,
   imageUrl: string | undefined,
   displayColor: boolean,
+  voicePrompt: string,
+  textPrompt: string,
 };
 
 type useModelParamsArgs = Partial<ModelParamsValues>;
@@ -39,6 +43,8 @@ export const useModelParams = (params?: useModelParamsArgs) => {
   const [imageResolution, setImageResolutionBase] = useState(params?.imageResolution || DEFAULT_IMAGE_RESOLUTION);
   const [imageUrl, setImageUrlBase] = useState(params?.imageUrl || DEFAULT_IMAGE_URL);
   const [displayColor, setDisplayColorBase] = useState<boolean>(params?.displayColor == undefined ? DEFAULT_DISPLAY_COLOR : params?.displayColor);
+  const [voicePrompt, setVoicePromptBase] = useState(params?.voicePrompt || DEFAULT_VOICE_PROMPT);
+  const [textPrompt, setTextPromptBase] = useState(params?.textPrompt || DEFAULT_TEXT_PROMPT);
 
   const resetParams = useCallback(() => {
     setTextTemperatureBase(DEFAULT_TEXT_TEMPERATURE);
@@ -50,7 +56,9 @@ export const useModelParams = (params?: useModelParamsArgs) => {
     setRepetitionPenaltyContextBase(DEFAULT_REPETITION_PENALTY_CONTEXT);
     setImageResolutionBase(DEFAULT_IMAGE_RESOLUTION);
     setImageUrlBase(DEFAULT_IMAGE_URL);
-    setDisplayColorBase(DEFAULT_DISPLAY_COLOR)
+    setDisplayColorBase(DEFAULT_DISPLAY_COLOR);
+    setVoicePromptBase(DEFAULT_VOICE_PROMPT);
+    setTextPromptBase(DEFAULT_TEXT_PROMPT);
   }, [
     setTextTemperatureBase,
     setTextTopkBase,
@@ -111,6 +119,12 @@ export const useModelParams = (params?: useModelParamsArgs) => {
   const setDisplayColor = useCallback((value: boolean) => {
     setDisplayColorBase(value);
   }, []);
+  const setVoicePrompt = useCallback((value: string) => {
+    setVoicePromptBase(value);
+  }, []);
+  const setTextPrompt = useCallback((value: string) => {
+    setTextPromptBase(value);
+  }, []);
   return {
     textTemperature,
     textTopk,
@@ -132,6 +146,10 @@ export const useModelParams = (params?: useModelParamsArgs) => {
     setImageUrl,
     setImageResolution,
     setDisplayColor,
+    voicePrompt,
+    textPrompt,
+    setVoicePrompt,
+    setTextPrompt,
     resetParams,
   }
 }

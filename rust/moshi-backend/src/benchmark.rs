@@ -76,6 +76,8 @@ pub async fn run(args: &crate::BenchmarkArgs, config: &Config) -> Result<()> {
         pad_mult: None,
         repetition_penalty_context: None,
         repetition_penalty: None,
+        voice_prompt: None,
+        text_prompt: None,
     };
     if args.mimi_only {
         let device = crate::standalone::device(args.cpu)?;

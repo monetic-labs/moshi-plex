@@ -689,6 +689,10 @@ impl StreamingTransformer {
     }
 }
 
+// =============================================================================
+// LmModel
+// =============================================================================
+
 #[derive(Debug, Clone)]
 pub struct LmModel {
     transformer: StreamingTransformer,
@@ -973,14 +977,10 @@ impl LmModel {
         forced_audio_tokens: &[Option<u32>],
         lp: &mut candle_transformers::generation::LogitsProcessor,
     ) -> Result<Option<Vec<u32>>> {
-        let sample = match self.depformer.as_mut() {
-            None => None,
-            Some(m) => {
-                let sample = m.sample(xs, text_token, forced_audio_tokens, lp)?;
-                Some(sample)
-            }
-        };
-        Ok(sample)
+        match self.depformer.as_mut() {
+            None => Ok(None),
+            Some(m) => Ok(Some(m.sample(xs, text_token, forced_audio_tokens, lp)?)),
+        }
     }
 
     pub fn depformer_sample_cfg(
@@ -991,14 +991,10 @@ impl LmModel {
         forced_audio_tokens: &[Option<u32>],
         lp: &mut candle_transformers::generation::LogitsProcessor,
     ) -> Result<Option<Vec<u32>>> {
-        let sample = match self.depformer.as_mut() {
-            None => None,
-            Some(m) => {
-                let sample = m.sample_cfg(xs, cfg_alpha, text_token, forced_audio_tokens, lp)?;
-                Some(sample)
-            }
-        };
-        Ok(sample)
+        match self.depformer.as_mut() {
+            None => Ok(None),
+            Some(m) => Ok(Some(m.sample_cfg(xs, cfg_alpha, text_token, forced_audio_tokens, lp)?)),
+        }
     }
 
     pub fn reset_batch_idx(&mut self, batch_idx: usize, batch_size: usize) -> Result<()> {
@@ -1087,6 +1083,173 @@ pub fn load_asr<P: AsRef<std::path::Path>>(
 ) -> Result<LmModel> {
     let cfg = Config::asr_v0_1_1b();
     load_lm_model(cfg, model_file, dtype, dev)
+}
+
+/// Load PersonaPlex-7B-v1 model.
+///
+/// PersonaPlex uses the same main transformer as Moshi v0.1 (32 layers, 4096 dim)
+/// but has a different Depformer architecture: shared attention + per-slice gating.
+/// The main transformer weights are loaded by moshi's standard path, while the
+/// Depformer is loaded separately with PersonaPlex's weight naming convention.
+/// Load PersonaPlex-7B-v1 model using moshi's standard DepFormer infrastructure.
+///
+/// PersonaPlex stores per-slice attention/gating weights in concatenated tensors.
+/// We split them into 16 independent `DepFormerSlice` instances, each using
+/// moshi's battle-tested `StreamingTransformer`. This avoids custom attention code.
+/// PersonaPlex Depformer config (shared across safetensors and GGUF paths)
+fn personaplex_config_with_slices(num_slices: usize) -> Config {
+    let mut cfg = Config::v0_1_streaming(num_slices);
+    let dep_cfg = DepFormerConfig {
+        num_slices,
+        transformer: transformer::Config {
+            d_model: 1024,
+            num_heads: 16,
+            num_layers: 6,
+            dim_feedforward: 4224,
+            causal: true,
+            norm_first: true,
+            bias_ff: false,
+            bias_attn: false,
+            layer_scale: None,
+            context: num_slices,
+            max_period: 10000,
+            use_conv_block: false,
+            use_conv_bias: true,
+            cross_attention: None,
+            gating: Some(candle_nn::Activation::Silu),
+            norm: crate::NormType::RmsNorm,
+            positional_embedding: transformer::PositionalEmbedding::None,
+            conv_layout: false,
+            conv_kernel_size: 3,
+            kv_repeat: 1,
+            max_seq_len: 4096,
+            shared_cross_attn: false,
+        },
+        low_rank_embeddings: None,
+    };
+    cfg.depformer = Some(dep_cfg);
+    cfg
+}
+
+pub fn load_personaplex<P: AsRef<std::path::Path>>(
+    model_file: P,
+    dtype: DType,
+    dev: &Device,
+) -> Result<LmModel> {
+    load_personaplex_with_slices(model_file, 8, dtype, dev)
+}
+
+pub fn load_personaplex_16<P: AsRef<std::path::Path>>(
+    model_file: P,
+    dtype: DType,
+    dev: &Device,
+) -> Result<LmModel> {
+    load_personaplex_with_slices(model_file, 16, dtype, dev)
+}
+
+fn load_personaplex_with_slices<P: AsRef<std::path::Path>>(
+    model_file: P,
+    num_slices: usize,
+    dtype: DType,
+    dev: &Device,
+) -> Result<LmModel> {
+    let cfg = personaplex_config_with_slices(num_slices);
+
+    // If GGUF, load directly (weights already remapped by conversion script)
+    let is_gguf = model_file.as_ref().extension().is_some_and(|v| v == "gguf");
+    if is_gguf {
+        return load_lm_model(cfg, model_file, dtype, dev);
+    }
+
+    // For safetensors, remap PersonaPlex weight names to standard moshi layout
+    use candle_nn::VarBuilder;
+    use std::collections::HashMap;
+
+    // Load raw tensors
+    let raw_tensors = candle::safetensors::load(&model_file, dev)?;
+
+    // Build per-slice tensor maps for the standard DepFormer layout.
+    // PersonaPlex stores: depformer.layers.{L}.self_attn.in_proj_weight [16*3072, 1024]
+    // Standard moshi expects: depformer.{slice}.transformer.layers.{L}.self_attn.in_proj_weight [3072, 1024]
+    let num_slices = num_slices;
+    let num_layers = 6usize;
+    let d_model = 1024usize;
+    let mut remapped: HashMap<String, Tensor> = HashMap::new();
+
+    // Copy all non-depformer tensors as-is
+    for (name, tensor) in &raw_tensors {
+        if !name.starts_with("depformer") && !name.starts_with("linears.") {
+            remapped.insert(name.clone(), tensor.clone());
+        }
+    }
+
+    for slice_idx in 0..num_slices {
+        let prefix = format!("depformer.{slice_idx}");
+
+        // Transformer layers: split concatenated attention, remap gating, share norms
+        for layer_idx in 0..num_layers {
+            let src_prefix = format!("depformer.layers.{layer_idx}");
+            let dst_prefix = format!("{prefix}.transformer.layers.{layer_idx}");
+
+            // Self-attention in_proj: narrow from [16*3072, 1024] to [3072, 1024]
+            let in_proj_key = format!("{src_prefix}.self_attn.in_proj_weight");
+            if let Some(t) = raw_tensors.get(&in_proj_key) {
+                let slice_w = t.narrow(0, slice_idx * 3 * d_model, 3 * d_model)?.contiguous()?;
+                remapped.insert(format!("{dst_prefix}.self_attn.in_proj_weight"), slice_w);
+            }
+
+            // Self-attention out_proj: narrow from [16*1024, 1024] to [1024, 1024]
+            let out_proj_key = format!("{src_prefix}.self_attn.out_proj.weight");
+            if let Some(t) = raw_tensors.get(&out_proj_key) {
+                let slice_w = t.narrow(0, slice_idx * d_model, d_model)?.contiguous()?;
+                remapped.insert(format!("{dst_prefix}.self_attn.out_proj.weight"), slice_w);
+            }
+
+            // Norms: shared across slices (same tensor for all)
+            for norm_name in &["norm1.alpha", "norm2.alpha"] {
+                let src_key = format!("{src_prefix}.{norm_name}");
+                if let Some(t) = raw_tensors.get(&src_key) {
+                    remapped.insert(format!("{dst_prefix}.{norm_name}"), t.clone());
+                }
+            }
+
+            // Gating: PersonaPlex depformer.layers.{L}.gating.{S}.linear_in/out
+            //       -> moshi depformer.{S}.transformer.layers.{L}.gating.linear_in/out
+            let gating_in_key = format!("{src_prefix}.gating.{slice_idx}.linear_in.weight");
+            if let Some(t) = raw_tensors.get(&gating_in_key) {
+                remapped.insert(format!("{dst_prefix}.gating.linear_in.weight"), t.clone());
+            }
+            let gating_out_key = format!("{src_prefix}.gating.{slice_idx}.linear_out.weight");
+            if let Some(t) = raw_tensors.get(&gating_out_key) {
+                remapped.insert(format!("{dst_prefix}.gating.linear_out.weight"), t.clone());
+            }
+        }
+
+        // Per-slice embeddings: depformer_emb.{S} -> depformer.{S}.emb.weight
+        if slice_idx == 0 {
+            // Slice 0 uses text embedding
+            if let Some(t) = raw_tensors.get("depformer_text_emb.weight") {
+                remapped.insert(format!("{prefix}.emb.weight"), t.clone());
+            }
+        } else if let Some(t) = raw_tensors.get(&format!("depformer_emb.{}.weight", slice_idx - 1)) {
+            remapped.insert(format!("{prefix}.emb.weight"), t.clone());
+        }
+
+        // Per-slice linear_in: depformer_in.{S} -> depformer.{S}.linear_in.weight
+        if let Some(t) = raw_tensors.get(&format!("depformer_in.{slice_idx}.weight")) {
+            remapped.insert(format!("{prefix}.linear_in.weight"), t.clone());
+        }
+
+        // Per-slice output: linears.{S} -> depformer.{S}.linear_out.weight
+        if let Some(t) = raw_tensors.get(&format!("linears.{slice_idx}.weight")) {
+            remapped.insert(format!("{prefix}.linear_out.weight"), t.clone());
+        }
+    }
+
+    let vb = VarBuilder::from_tensors(remapped, dtype, dev);
+    let mqvb = MaybeQuantizedVarBuilder::Real(vb);
+    let model = LmModel::new(&cfg, mqvb)?;
+    Ok(model)
 }
 
 pub struct ForcedAudioTokens {

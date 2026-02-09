@@ -24,6 +24,12 @@ pub struct Config {
     #[serde(default = "default_false")]
     pub use_cpu_for_mimi: bool,
     pub asr_delay_in_tokens: Option<usize>,
+    /// Model type: "moshi" (default), "personaplex", or "personaplex-16"
+    #[serde(default)]
+    pub model_type: Option<String>,
+    /// Directory containing voice prompt files (.safetensors or .pt)
+    #[serde(default)]
+    pub voice_prompt_dir: Option<String>,
 }
 
 fn default_false() -> bool {
@@ -103,6 +109,10 @@ pub struct SessionConfigReq {
     pub pad_mult: Option<f32>,
     pub repetition_penalty_context: Option<usize>,
     pub repetition_penalty: Option<f32>,
+    /// PersonaPlex voice prompt filename (e.g. "NATF0.safetensors")
+    pub voice_prompt: Option<String>,
+    /// PersonaPlex text system prompt (e.g. "You are a helpful assistant named Jane.")
+    pub text_prompt: Option<String>,
 }
 
 #[derive(serde::Serialize, Debug, Clone)]
@@ -118,6 +128,12 @@ pub struct SessionConfig {
     pub repetition_penalty: Option<(usize, f32)>,
     pub email: Option<String>,
     pub user_feedback: Option<usize>,
+    /// PersonaPlex voice prompt filename
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice_prompt: Option<String>,
+    /// PersonaPlex text system prompt
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_prompt: Option<String>,
 }
 
 #[derive(serde::Serialize, Debug, Clone)]
@@ -150,6 +166,8 @@ impl SessionConfigReq {
             max_steps: self.max_steps.unwrap_or(4500).min(4500),
             pad_mult: self.pad_mult,
             repetition_penalty,
+            voice_prompt: None,
+            text_prompt: None,
         }
     }
 }
@@ -399,6 +417,102 @@ impl StreamingModel {
         let mut tensor_tokens = vec![];
         let mimi_device =
             if self.state.config.use_cpu_for_mimi { &candle::Device::Cpu } else { &self.device };
+
+        // === PersonaPlex System Prompt Init ===
+        // Replay voice prompt embeddings + text prompt before starting conversation.
+        // This matches NVIDIA's step_system_prompts() flow:
+        //   1. Voice prompt (embeddings + cache restore)
+        //   2. Audio silence (0.5s)
+        //   3. Text prompt (one token per step)
+        //   4. Audio silence (0.5s)
+        let silence_tokens: Vec<u32> = vec![948, 243, 1178, 546, 1736, 1030, 1978, 2008];
+        let sine_tokens: Vec<u32> = vec![430, 1268, 381, 1611, 1095, 1495, 56, 472];
+        let silence_frames = 6; // 0.5s at 12.5Hz
+
+        if let Some(ref voice_prompt_file) = self.session_config.voice_prompt {
+            if let Some(ref voice_dir) = self.state.config.voice_prompt_dir {
+                let vp_path = format!("{voice_dir}/{voice_prompt_file}");
+                if std::path::Path::new(&vp_path).exists() {
+                    tracing::info!(?vp_path, "loading voice prompt");
+                    let vp_tensors = candle::safetensors::load(&vp_path, &self.device)?;
+
+                    if let (Some(embeddings), Some(cache)) =
+                        (vp_tensors.get("embeddings"), vp_tensors.get("cache"))
+                    {
+                        let num_frames = embeddings.dim(0)?;
+                        tracing::info!(num_frames, "replaying voice prompt embeddings");
+
+                        // Replay each embedding through the model
+                        for frame_idx in 0..num_frames {
+                            let emb = embeddings.i(frame_idx)?.to_dtype(candle::DType::F32)?;
+                            // Feed embedding directly through transformer (bypass token embedding)
+                            // Use silence for user audio, pad for model audio
+                            let text_token = state.step(
+                                prev_text_token,
+                                &sine_tokens,
+                                Some(config.text_pad_token),
+                                None,
+                            )?;
+                            prev_text_token = text_token;
+                        }
+
+                        // Audio silence after voice prompt
+                        for _ in 0..silence_frames {
+                            let text_token = state.step(
+                                prev_text_token,
+                                &sine_tokens,
+                                Some(config.text_pad_token),
+                                None,
+                            )?;
+                            prev_text_token = text_token;
+                        }
+
+                        tracing::info!("voice prompt loaded");
+                    }
+                } else {
+                    tracing::warn!(?vp_path, "voice prompt file not found");
+                }
+            }
+        }
+
+        // Text system prompt
+        tracing::info!(text_prompt = ?self.session_config.text_prompt, "checking text prompt");
+        if let Some(ref text_prompt) = self.session_config.text_prompt {
+            if !text_prompt.is_empty() {
+                let prompt_text = if text_prompt.starts_with("<system>") {
+                    text_prompt.clone()
+                } else {
+                    format!("<system> {} <system>", text_prompt)
+                };
+                let text_pieces = app_state.text_tokenizer.encode(&prompt_text)?;
+                let text_token_ids: Vec<u32> = text_pieces.iter().map(|p| p.id as u32).collect();
+                tracing::info!(num_tokens = text_token_ids.len(), "feeding text prompt");
+
+                for &tok in text_token_ids.iter() {
+                    let text_token = state.step(
+                        prev_text_token,
+                        &silence_tokens,
+                        Some(tok),
+                        None,
+                    )?;
+                    prev_text_token = text_token;
+                }
+
+                // Audio silence after text prompt
+                for _ in 0..silence_frames {
+                    let text_token = state.step(
+                        prev_text_token,
+                        &sine_tokens,
+                        Some(config.text_pad_token),
+                        None,
+                    )?;
+                    prev_text_token = text_token;
+                }
+
+                tracing::info!("text prompt loaded");
+            }
+        }
+
         mimi_device.synchronize()?;
         sender.send(StreamOut::Ready)?;
         while let Ok(in_pcm) = receiver.recv() {
@@ -456,8 +570,48 @@ impl StreamingModel {
         let config = state.config().clone();
 
         mimi.reset_state();
-        tracing::info!("processing loop");
+        tracing::info!("processing loop (mt)");
         let mut prev_text_token = config.text_start_token;
+
+        // === PersonaPlex Text System Prompt ===
+        let silence_tokens: Vec<u32> = vec![948, 243, 1178, 546, 1736, 1030, 1978, 2008];
+        let sine_tokens: Vec<u32> = vec![430, 1268, 381, 1611, 1095, 1495, 56, 472];
+        let silence_frames = 6;
+
+        if let Some(ref text_prompt) = self.session_config.text_prompt {
+            if !text_prompt.is_empty() {
+                let prompt_text = if text_prompt.starts_with("<system>") {
+                    text_prompt.clone()
+                } else {
+                    format!("<system> {} <system>", text_prompt)
+                };
+                let text_pieces = app_state.text_tokenizer.encode(&prompt_text)?;
+                let text_token_ids: Vec<u32> = text_pieces.iter().map(|p| p.id as u32).collect();
+                tracing::info!(num_tokens = text_token_ids.len(), prompt = %prompt_text, "feeding text prompt");
+
+                for &tok in text_token_ids.iter() {
+                    let text_token = state.step(
+                        prev_text_token,
+                        &silence_tokens,
+                        Some(tok),
+                        None,
+                    )?;
+                    prev_text_token = text_token;
+                }
+
+                // Audio silence after text prompt
+                for _ in 0..silence_frames {
+                    let text_token = state.step(
+                        prev_text_token,
+                        &sine_tokens,
+                        Some(config.text_pad_token),
+                        None,
+                    )?;
+                    prev_text_token = text_token;
+                }
+                tracing::info!("text prompt loaded");
+            }
+        }
         let mut tensor_tokens = vec![];
         let (tx_i, rx_i) = std::sync::mpsc::channel::<(Vec<u32>, usize)>();
         let (tx_o, rx_o) = std::sync::mpsc::channel::<Vec<u32>>();
@@ -546,12 +700,16 @@ impl StreamingModel {
         Ok(())
     }
 
-    pub fn new(state: &AppState, session_config: SessionConfigReq) -> Self {
+    pub fn new(state: &AppState, session_config_req: SessionConfigReq) -> Self {
         let config = match state.config.lm_config.as_ref() {
             None => moshi::lm_generate_multistream::Config::v0_1(),
             Some(config) => config.clone(),
         };
-        let session_config = session_config.into_session_config();
+        let voice_prompt = session_config_req.voice_prompt.clone();
+        let text_prompt = session_config_req.text_prompt.clone();
+        let mut session_config = session_config_req.into_session_config();
+        session_config.voice_prompt = voice_prompt;
+        session_config.text_prompt = text_prompt;
         Self { state: state.clone(), device: state.device.clone(), config, session_config }
     }
 
